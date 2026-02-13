@@ -1,0 +1,7 @@
+apply plugin: 'expo-module-gradle-plugin'
+
+buildscript {
+  repositories {
+    mavenCentral()
+  }
+}
