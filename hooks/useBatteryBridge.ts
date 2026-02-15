@@ -53,6 +53,8 @@ export function useBatteryBridge() {
      * useState だけだと古い値を参照してしまう問題を回避する。
      */
     const devicesRef = useRef<Map<string, BleDevice>>(new Map());
+    /** スキャンタイムアウト用タイマー ID */
+    const scanTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // ── ネイティブイベントリスナー ─────────────────────────
 
@@ -126,13 +128,19 @@ export function useBatteryBridge() {
         }
     }, []);
 
+    /** デフォルトのスキャンタイムアウト（ミリ秒） */
+    const DEFAULT_SCAN_TIMEOUT = 10000;
+
     /**
      * BLE デバイスのスキャンを開始する。
      * - Android: パーミッション確認 → スキャン開始
      * - 発見済みデバイスリストをクリアしてからスキャンを開始
      * - スキャン結果は onDeviceFound イベントで受け取る
+     * - 指定時間（デフォルト 10秒）経過後にスキャンを自動停止する
+     *
+     * @param timeout - スキャンタイムアウト（ミリ秒）。デフォルト 10000ms
      */
-    const startScan = useCallback(async () => {
+    const startScan = useCallback(async (timeout: number = DEFAULT_SCAN_TIMEOUT) => {
         try {
             setError(null);
 
@@ -148,15 +156,31 @@ export function useBatteryBridge() {
             setDevices(new Map());
             await BatteryModule.startScan();
             setIsScanning(true);
+
+            // 既存のタイマーをクリアしてから新しいタイムアウトを設定
+            if (scanTimeoutRef.current) {
+                clearTimeout(scanTimeoutRef.current);
+            }
+            scanTimeoutRef.current = setTimeout(async () => {
+                scanTimeoutRef.current = null;
+                try {
+                    await BatteryModule.stopScan();
+                    setIsScanning(false);
+                } catch (_) {}
+            }, timeout);
         } catch (e) {
             setError(e instanceof Error ? e.message : 'Failed to start scan');
             setIsScanning(false);
         }
     }, [requestAndroidPermissions]);
 
-    /** BLE スキャンを停止する。 */
+    /** BLE スキャンを停止する。タイムアウトタイマーもクリアする。 */
     const stopScan = useCallback(async () => {
         try {
+            if (scanTimeoutRef.current) {
+                clearTimeout(scanTimeoutRef.current);
+                scanTimeoutRef.current = null;
+            }
             await BatteryModule.stopScan();
             setIsScanning(false);
         } catch (e) {
