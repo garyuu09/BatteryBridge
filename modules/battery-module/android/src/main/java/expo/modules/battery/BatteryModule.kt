@@ -94,6 +94,15 @@ class BatteryModule : Module() {
       val deviceId = gatt.device.address
       when (newState) {
         BluetoothProfile.STATE_CONNECTED -> {
+          if (status != BluetoothGatt.GATT_SUCCESS) {
+            sendEvent("onConnectionStateChanged", mapOf(
+              "deviceId" to deviceId,
+              "state" to "failed",
+              "error" to "Connection failed with status: $status"
+            ))
+            try { gatt.close() } catch (_: Exception) {}
+            return
+          }
           bluetoothGatt = gatt
           sendEvent("onConnectionStateChanged", mapOf(
             "deviceId" to deviceId,
@@ -108,10 +117,18 @@ class BatteryModule : Module() {
         }
         BluetoothProfile.STATE_DISCONNECTED -> {
           bluetoothGatt = null
-          sendEvent("onConnectionStateChanged", mapOf(
-            "deviceId" to deviceId,
-            "state" to "disconnected"
-          ))
+          if (status != BluetoothGatt.GATT_SUCCESS) {
+            sendEvent("onConnectionStateChanged", mapOf(
+              "deviceId" to deviceId,
+              "state" to "failed",
+              "error" to "Connection lost with status: $status"
+            ))
+          } else {
+            sendEvent("onConnectionStateChanged", mapOf(
+              "deviceId" to deviceId,
+              "state" to "disconnected"
+            ))
+          }
           try {
             gatt.close()
           } catch (_: Exception) {}
@@ -121,10 +138,36 @@ class BatteryModule : Module() {
 
     @Suppress("DEPRECATION")
     override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
-      if (status != BluetoothGatt.GATT_SUCCESS) return
+      val deviceId = gatt.device.address
 
-      val batteryService = gatt.getService(BATTERY_SERVICE_UUID) ?: return
-      val batteryChar = batteryService.getCharacteristic(BATTERY_LEVEL_CHAR_UUID) ?: return
+      if (status != BluetoothGatt.GATT_SUCCESS) {
+        sendEvent("onBatteryLevelReceived", mapOf(
+          "deviceId" to deviceId,
+          "level" to -1,
+          "error" to "Service discovery failed with status: $status"
+        ))
+        return
+      }
+
+      val batteryService = gatt.getService(BATTERY_SERVICE_UUID)
+      if (batteryService == null) {
+        sendEvent("onBatteryLevelReceived", mapOf(
+          "deviceId" to deviceId,
+          "level" to -1,
+          "error" to "Battery Service (0x180F) not supported by this device"
+        ))
+        return
+      }
+
+      val batteryChar = batteryService.getCharacteristic(BATTERY_LEVEL_CHAR_UUID)
+      if (batteryChar == null) {
+        sendEvent("onBatteryLevelReceived", mapOf(
+          "deviceId" to deviceId,
+          "level" to -1,
+          "error" to "Battery Level characteristic (0x2A19) not found"
+        ))
+        return
+      }
 
       try {
         requireConnectPermission()
@@ -146,13 +189,32 @@ class BatteryModule : Module() {
       characteristic: BluetoothGattCharacteristic,
       status: Int
     ) {
-      if (characteristic.uuid == BATTERY_LEVEL_CHAR_UUID && status == BluetoothGatt.GATT_SUCCESS) {
-        val level = characteristic.value?.firstOrNull()?.toInt()?.and(0xFF) ?: return
+      if (characteristic.uuid != BATTERY_LEVEL_CHAR_UUID) return
+
+      val deviceId = gatt.device.address
+      if (status != BluetoothGatt.GATT_SUCCESS) {
         sendEvent("onBatteryLevelReceived", mapOf(
-          "deviceId" to gatt.device.address,
-          "level" to level
+          "deviceId" to deviceId,
+          "level" to -1,
+          "error" to "Failed to read battery level (status: $status)"
         ))
+        return
       }
+
+      val level = characteristic.value?.firstOrNull()?.toInt()?.and(0xFF)
+      if (level == null) {
+        sendEvent("onBatteryLevelReceived", mapOf(
+          "deviceId" to deviceId,
+          "level" to -1,
+          "error" to "Battery level data is empty"
+        ))
+        return
+      }
+
+      sendEvent("onBatteryLevelReceived", mapOf(
+        "deviceId" to deviceId,
+        "level" to level
+      ))
     }
 
     @Suppress("DEPRECATION")
